@@ -1,0 +1,38 @@
+# 环境变量文件
+.env
+
+# Foundry 构建输出目录
+out/
+
+# Foundry 缓存目录
+cache/
+
+# Foundry 广播目录（包含部署交易）
+broadcast/
+!/broadcast
+/broadcast/*/31337/
+/broadcast/**/dry-run/
+
+# Foundry 部署记录
+deployments/
+
+# Foundry 锁文件（如果不需要版本控制）
+foundry.lock
+
+# 测试密钥存储
+keystore/
+
+# 本地开发文件
+*.log
+*.tmp
+*.temp
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器文件
+.vscode/
+.idea/
+*.swp
+*.swo
