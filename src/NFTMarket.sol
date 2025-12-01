@@ -1,32 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-/**
- * @title NFTMarket
- * @author omg
- * @notice NFT交易市场合约，支持ERC721 NFT的上架、购买和交易功能
- * @dev 该合约实现了基于ERC20代币的NFT交易市场，包含手续费机制和完整的订单管理系统
- * 
- * 核心功能：
- * 1. NFT上架：允许NFT所有者将NFT上架到市场进行销售
- * 2. NFT购买：买家可以使用ERC20Enhanced代币购买市场上的NFT
- * 3. 手续费机制：平台从每笔交易中收取一定比例的手续费，计算公式：平台手续费 = max(交易金额 * 平台手续费百分比 / 10000, minimumFee)
- * 4. 订单管理：完整的订单生命周期管理（待处理、已完成、已取消）
- * 5. 权限控制：基于NFT所有权和授权的访问控制
- * 
- * 主要流程：
- * 1. 卖家调用list()方法上架NFT
- * 2. 买家调用buy()方法发起购买，创建订单并支付手续费
- * 3. 合约通过transferWithCallback机制完成资金和NFT的交换
- * 4. tokenReceived()回调函数完成NFT转移并更新订单状态
- * 
- * 安全特性：
- * - 使用try/catch处理外部调用异常
- * - 完善的权限验证（所有权和授权检查）
- * - 订单状态一致性保证
- * - 管理员权限控制（手续费设置）
- */
-
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {IERC721Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";

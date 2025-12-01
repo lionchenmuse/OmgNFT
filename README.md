@@ -1,66 +1,29 @@
-## Foundry
+# NFTMarket
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+## 概述
 
-Foundry consists of:
+NFT交易市场合约，支持ERC721 NFT的上架、购买和交易功能。
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+该合约实现了基于ERC20代币的NFT交易市场，包含手续费机制和订单管理系统。
 
-## Documentation
+## 核心功能
 
-https://book.getfoundry.sh/
+1. **NFT上架**：允许NFT所有者将NFT上架到市场进行销售
+2. **NFT购买**：买家可以使用ERC20Enhanced代币购买市场上的NFT
+3. **手续费机制**：平台从每笔交易中收取一定比例的手续费，计算公式：平台手续费 = max(交易金额 * 平台手续费百分比 / 10000, minimumFee)
+4. **订单管理**：订单生命周期管理（待处理、已完成、已取消）
+5. **权限控制**：基于NFT所有权和授权的访问控制
 
-## Usage
+## 主要流程
 
-### Build
+1. 卖家调用`list()`方法上架NFT
+2. 买家调用`buy()`方法发起购买，创建订单并支付手续费
+3. 合约通过`transferWithCallback`机制完成资金和NFT的交换
+4. `tokenReceived()`回调函数完成NFT转移并更新订单状态
 
-```shell
-$ forge build
-```
+## 安全特性
 
-### Test
-
-```shell
-$ forge test
-```
-
-### Format
-
-```shell
-$ forge fmt
-```
-
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+- 使用try/catch处理外部调用异常
+- 完善的权限验证（所有权和授权检查）
+- 订单状态一致性保证
+- 管理员权限控制（手续费设置）
