@@ -1,0 +1,18 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+
+# 配置文件写权限，注意：只能在deployments目录下写入文件，不能创建子目录！
+# access可以配置的权限有：read、write、read-write
+fs_permissions = [
+    {access = "write", path = "./deployments"}
+]
+
+[rpc_endpoints]
+mainnet = "https://mainnet.infura.io/v3/your-key"
+# goerli = "${GOERLI_RPC_URL}"
+sepolia = "${SEPOLIA_URL}"
+local = "http://localhost:8545"
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

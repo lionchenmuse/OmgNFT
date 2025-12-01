@@ -1,0 +1,1 @@
+forge verify-contract --watch --chain sepolia 0x3f8ac9ecA01DFf10F77268E1a5Ad81aC8b027C4b src/OmgNFT.sol:OmgNFT --verifier etherscan --etherscan-api-key $ETHERSCAN_API_KEY
