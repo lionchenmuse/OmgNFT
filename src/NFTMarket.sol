@@ -7,6 +7,7 @@ import {IERC721Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.s
 import {Counters} from "./utils/Counters.sol";
 import {ERC20Enhanced} from "./ERC20Enhanced.sol";
 import {IERC20Receipient} from "./interfaces/IERC20Receipient.sol";
+import "forge-std/console.sol";
 
 struct NFT {
     uint256 tokenId;
@@ -483,12 +484,12 @@ contract NFTMarket is IERC20Receipient {
     }
 
     /**
-    * @dev 购买NFT的回调函数
-    * @param _buyer 购买者
-    * @param _platformFee 购买金额
-    * @param _data 购买数据，实际是订单ID
+    * @dev 支付手续费的回调函数
+    * @param _seller NFT 所有者
+    * @param _platformFee 平台手续费
+    * @param _data 附加数据，实际是订单ID
     */
-    function tokenReceived(address _buyer, uint256 _platformFee, bytes memory _data) external override {
+    function tokenReceived(address _seller, uint256 _platformFee, bytes memory _data) external override {
         // 第一步，将data解码成订单ID，并将对应订单读取到memory中（避免反复读取storage消耗太多GAS）
         uint256 oId = abi.decode(_data, (uint256));
         Order memory order = _orders[oId]; 
@@ -500,20 +501,16 @@ contract NFTMarket is IERC20Receipient {
             revert Unauthorized(msg.sender);
         }     
 
-        // 以下第三步和第四步检查哪怕比较运算符两端相等，也会进入if分支块中，回退交易
-        // 找不出原因，非常奇怪。
-        // 在测试文件中，用断言试过，他们实际上都是相等的。。。   
-
         // 第三步，检查订单是否存在
-        // if (_orders[oId].id != oId) {
-        //     _orders[oId].status = OrderStatus.Cancelled;
-        //     revert InvalidOrder(oId);
-        // }
-        // 第四步，检查回传的buyer和amount与订单中的记录是否一致
-        // if (_orders[oId].buyer != _buyer || _orders[oId].platformFee != _platformFee) {
-        //     _orders[oId].status = OrderStatus.Cancelled;
-        //     revert InvalidOrder(oId);
-        // }
+        if (order.id != oId) {
+            _orders[oId].status = OrderStatus.Cancelled;
+            revert InvalidOrder(oId);
+        }
+        // 第四步，检查回传的seller和amount与订单中的记录是否一致
+        if (order.seller != _seller || order.platformFee != _platformFee) {
+            _orders[oId].status = OrderStatus.Cancelled;
+            revert InvalidOrder(oId);
+        }
 
         // 第五步，获取到对应的NFT和对应的NFT合约
         NFT memory nft = _nfts[order.nftMarketId];
