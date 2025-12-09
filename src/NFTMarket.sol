@@ -9,25 +9,31 @@ import {ERC20Enhanced} from "./ERC20Enhanced.sol";
 import {IERC20Receipient} from "./interfaces/IERC20Receipient.sol";
 import "forge-std/console.sol";
 
+/**
+* Solidity中，EVM将状态变量存储在32字节(256位)的存储槽(slot)中。
+* 为了最大化存储效率，Solidity会对较小的数据类型进行紧密打包，
+* 将多个变量放入同一个存储槽。
+*/
+
 struct NFT {
-    uint256 tokenId;
-    uint256 price;
-    address owner;
-    address contractAddress;
-    string uri;
+    uint256 tokenId;                    // 32 字节, slot 0
+    uint256 price;                      // 32 字节, slot 1
+    address owner;                      // 20 字节, slot 2
+    address contractAddress;            // 20 字节, slot 3
+    string uri;                         // 32 字节, slot 4
 }
 
 struct Order {
-    uint256 id;
-    uint256 nftMarketId;
-    uint256 nftId;
-    uint256 price;
-    uint256 platformFee;
-    uint256 sellerAmount;
-    address buyer;
-    address seller;
-    uint256 timestamp;
-    OrderStatus status;
+    uint256 id;             // slot 0
+    uint256 nftMarketId;    // slot 1
+    uint256 nftId;          // slot 2
+    uint256 price;          // slot 3
+    uint256 platformFee;    // slot 4
+    uint256 sellerAmount;   // slot 5
+    address buyer;          // slot 6 (地址是20字节，浪费12字节)
+    address seller;         // slot 7 (浪费12字节)
+    uint256 timestamp;      // slot 8
+    OrderStatus status;     // slot 8 (枚举实际是uint8，浪费31字节)
 }
 
 enum OrderStatus {
@@ -289,6 +295,7 @@ contract NFTMarket is IERC20Receipient {
         if (!_isNFTOwnerOrApprovedForAll(_tokenId, owner, _contract)) {
             revert NotOwnerAndNotApprovedOfNFT(msg.sender, _tokenId);
         }
+        
         // 第四步，将NFT信息保存到市场中
         uint256 id = _nftMarketId.next();
         NFT memory nft = NFT(_tokenId, _price, owner, _contractAddress, _tokenURI);
@@ -320,11 +327,8 @@ contract NFTMarket is IERC20Receipient {
             // 忽略错误，继续检查批量授权
         }        
         // 如果单个授权检查失败，尝试批量授权检查
-        try _contract.isApprovedForAll(_owner, msg.sender) returns (bool isApproved) {
-            return isApproved;
-        } catch {
-            return false;
-        }
+        // 直接调用批量授权检查
+        return _contract.isApprovedForAll(_owner, msg.sender);
     }
 
     /**
@@ -333,82 +337,62 @@ contract NFTMarket is IERC20Receipient {
     * @return orderId 订单ID
     */
     function buy(uint256 _id) external returns (uint256 orderId) {
-        // 第一步，检查NFT是否存在，检查当前所有者是否与记录所有者一致
+        // 去掉过多检查，浪费GAS
+        
         NFT memory nft = _nfts[_id];
-        _getCurrentOwner(_id, nft, 0);
 
-        // 第二步，检查价格是否合法有效
+        // 第一步，检查价格是否合法有效
         if (nft.price < _minimumFee) {
             revert InvalidPrice(nft.price);            
-        }
-        // 第三步，检查交易发起者的余额是否充足
-        uint256 balanceOfBuyer = _balanceOf(msg.sender);
-        if (balanceOfBuyer < nft.price) {
-            revert InsufficientBalance(msg.sender, _id, nft.tokenId, balanceOfBuyer, nft.price);
-        }
+        }        
 
-        // 第四步，计算手续费
+        // 第二步，计算手续费
         uint256 percentageFee = nft.price * _platformFeePercent / 10000;
         // NFTMarket 收取的手续费，如果手续费低于最小手续费，则使用最小手续费
         uint256 platformFee = percentageFee > _minimumFee ? percentageFee : _minimumFee;
         // 实际转账给卖家的金额
         uint256 sellerAmount = nft.price - platformFee;
 
-        // 第五步，生成订单id，并创建订单
-        uint256 oId = _orderId.next();    
-        // 获取当前区块时间戳
-        uint256 timestamp = block.timestamp;
+        // 第三步，生成订单id，并创建订单
+        uint256 oId = _orderId.next();   // 生成订单id        
+        uint256 timestamp = block.timestamp;    // 获取当前区块时间戳
         _orders[oId] = Order(oId, _id, nft.tokenId, nft.price, platformFee, sellerAmount, msg.sender, nft.owner, timestamp, OrderStatus.Pending); 
         
-        // 第六步，检查买家是否授权给NFTMarket足够的金额转账给NFT的所有者
-        uint256 allowance = _getAllowance(msg.sender, address(this));
-        if (allowance < nft.price) {
-            _orders[oId].status = OrderStatus.Cancelled;
-            revert InsufficientAllowance(oId, msg.sender, address(this), nft.price);
-        }        
-        
-        // 第七步，检查NFT所有者是否授权给NFTMarket足够的转账金额用于支付手续费
-        allowance = _getAllowance(nft.owner, address(this));
-        if (allowance < platformFee) {
-            _orders[oId].status = OrderStatus.Cancelled;
-            revert InsufficientAllowance(oId, nft.owner, address(this), platformFee);
-        }
-
-        // 第八步，触发事件
+        // 第四步，触发事件
         emit OrderPlaced(oId, _orders[oId].status, nft.tokenId, nft.contractAddress, msg.sender, nft.owner, nft.price, platformFee);         
 
-        // 第九步，将对应金额的代币从买家转移给NFT的所有者        
+        // 第五步，将对应金额的代币从买家转移给NFT的所有者        
         try _token.transferFrom(msg.sender, nft.owner, nft.price) returns (bool success) {
             if (!success) {
-                _orders[oId].status = OrderStatus.Cancelled;
+                _cancelOrder(oId);
                 revert TokenTransferFailed(_id, nft.tokenId, msg.sender, nft.owner, nft.price);
             }
         } catch Error(string memory reason) {
-            _orders[oId].status = OrderStatus.Cancelled;
+            _cancelOrder(oId);
             revert(reason);
         } catch Panic(uint256 errorCode) {
-            _orders[oId].status = OrderStatus.Cancelled;
+            _cancelOrder(oId);
             revert CallPanic(errorCode);
         } catch (bytes memory) {
-            _orders[oId].status = OrderStatus.Cancelled;
+            _cancelOrder(oId);
             revert CallFailed("ERC20Enhanced: transferFrom call failed");
         }
 
-        // 第十步，从卖家收取手续费
+        // 第六步，从卖家收取手续费
         bytes memory oIdBytes = abi.encodePacked(oId);
         try _token.transferWithCallback(nft.owner, address(this), platformFee, oIdBytes) returns (bool success) {
             if (!success) {
-                _orders[oId].status = OrderStatus.Cancelled;
+                _cancelOrder(oId);
                 revert PlatformFeeTransferFailed(oId, nft.tokenId, msg.sender, nft.owner, platformFee);
             }
         } catch Error(string memory reason) {
-            _orders[oId].status = OrderStatus.Cancelled;
+            _cancelOrder(oId);
             revert(reason);
         } catch Panic(uint256 errorCode) {
-            _orders[oId].status = OrderStatus.Cancelled;
+            _cancelOrder(oId);
             revert CallPanic(errorCode);
         } catch (bytes memory) {
-            _orders[oId].status = OrderStatus.Cancelled;
+            _cancelOrder(oId);
             revert CallFailed("ERC20Enhanced: transferWithCallback call failed (platformFee)");
         }             
 
@@ -485,11 +469,9 @@ contract NFTMarket is IERC20Receipient {
 
     /**
     * @dev 支付手续费的回调函数
-    * @param _seller NFT 所有者
-    * @param _platformFee 平台手续费
     * @param _data 附加数据，实际是订单ID
     */
-    function tokenReceived(address _seller, uint256 _platformFee, bytes memory _data) external override {
+    function tokenReceived(address /* _seller */, uint256 /* _platformFee */, bytes memory _data) external override {
         // 第一步，将data解码成订单ID，并将对应订单读取到memory中（避免反复读取storage消耗太多GAS）
         uint256 oId = abi.decode(_data, (uint256));
         Order memory order = _orders[oId]; 
@@ -497,47 +479,38 @@ contract NFTMarket is IERC20Receipient {
         // 第二步，权限验证
         if (msg.sender != address(_token)) {
             // order.status = OrderStatus.Cancelled;    // 这里错误，因为order是memory副本，修改它不会影响storege 中的订单!!!
-            _orders[oId].status = OrderStatus.Cancelled;
+            _cancelOrder(oId);
             revert Unauthorized(msg.sender);
         }     
 
         // 第三步，检查订单是否存在
         if (order.id != oId) {
-            _orders[oId].status = OrderStatus.Cancelled;
+            _cancelOrder(oId);
             revert InvalidOrder(oId);
-        }
-        // 第四步，检查回传的seller和amount与订单中的记录是否一致
-        if (order.seller != _seller || order.platformFee != _platformFee) {
-            _orders[oId].status = OrderStatus.Cancelled;
-            revert InvalidOrder(oId);
-        }
+        }        
 
-        // 第五步，获取到对应的NFT和对应的NFT合约
+        // 第四步，获取到对应的NFT和对应的NFT合约
         NFT memory nft = _nfts[order.nftMarketId];
 
-        // 第六步，检查NFT是否存在，当前所有者是否与记录的所有者一致
-        (, IERC721 _contract) = _getCurrentOwner(order.nftMarketId, nft, oId);
+        // 去掉了第五步检查，相信对方合约遵守了ERC721规范，如果在做NFT 转移时发现不是所有者，会按照规范返回错误
 
-        // 第七步，检查NFT所有者是否授权NFTMarket将NFT转移给买家
-        bool result = _isAuthorrized(nft.owner, _contract, oId);
-        if (!result) {
-            _orders[oId].status = OrderStatus.Cancelled;
-            revert NFTNotAuthorized(oId, nft.tokenId, nft.owner);
-        }
-        
-        // 第八步，将NFT从NFT的所有者转移到买家
+        // 第五步，检查NFT是否存在，当前所有者是否与记录的所有者一致
+        // (, IERC721 _contract) = _getCurrentOwner(order.nftMarketId, nft, oId);
+      
+        // 第七步，将NFT从NFT的所有者转移到买家
+        IERC721 _contract = IERC721(nft.contractAddress);
         try _contract.safeTransferFrom(nft.owner, order.buyer, nft.tokenId) {            
             _removeInvalidNFT(order.nftMarketId);
             _orders[oId].status = OrderStatus.Fulfilled;
             emit NFTSold(oId, nft.tokenId, nft.contractAddress, order.buyer, nft.owner, nft.price, order.platformFee);
         } catch Error(string memory reason) {
-            _orders[oId].status = OrderStatus.Cancelled;
+            _cancelOrder(oId);
             revert(reason);
         } catch Panic(uint256 errorCode) {
-            _orders[oId].status = OrderStatus.Cancelled;
+            _cancelOrder(oId);
             revert CallPanic(errorCode);
         } catch (bytes memory) {
-            _orders[oId].status = OrderStatus.Cancelled;
+            _cancelOrder(oId);
             revert NFTTransferFailed(oId, nft.tokenId, order.buyer, nft.owner);
         }         
     }
@@ -565,6 +538,10 @@ contract NFTMarket is IERC20Receipient {
             // 忽略单个授权失败，返回false
             return false;
         }
+    }
+
+    function _cancelOrder(uint256 orderId) private { 
+        _orders[orderId].status = OrderStatus.Cancelled;
     }
 
 }
