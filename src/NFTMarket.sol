@@ -123,11 +123,19 @@ contract NFTMarket is IERC20Receipient {
     * @param contractAddress NFT合约地址
     */
     error InvalidNFTContract(address contractAddress);
+
+    /**
+    * @dev 无效NFT错误，原因可能是id错误，或者NFT已被卖出（从映射中移除）
+    * @param nftMarketId NFT在市场的ID
+    */
+    error InvalidNFT(uint256 nftMarketId);
     /**
     * @dev 无效价格错误（不能小于_minimumFee）
     * @param price 价格
     */
     error InvalidPrice(uint256 price);
+
+    error SameBuyerAndSeller(uint256 nftMarketId, uint256 nftId, address nftOwner);
     /**
     * @dev 非NFT拥有者或授权者错误
     * @param sender 操作者
@@ -161,13 +169,12 @@ contract NFTMarket is IERC20Receipient {
     error InsufficientBalance(address buyer, uint256 NFTMarketId, uint256 tokenId, uint256 balance, uint256 needed);
     /**
     * @dev 平台手续费转账失败错误
-    * @param orderId 订单ID
     * @param tokenId NFT的ID
     * @param buyer 购买者
     * @param seller 卖家
     * @param platformFee 平台手续费
     */
-    error PlatformFeeTransferFailed(uint256 orderId, uint256 tokenId, address buyer, address seller, uint256 platformFee);
+    error PlatformFeeTransferFailed(uint256 tokenId, address buyer, address seller, uint256 platformFee);
     /**
     * @dev ERC20代币转账失败错误
     * @param marketId NFT在市场的ID
@@ -341,6 +348,11 @@ contract NFTMarket is IERC20Receipient {
         
         NFT memory nft = _nfts[_id];
 
+        // 第一步，检查NFT是否存在
+        if (_nfts[_id].tokenId == 0) {
+            revert InvalidNFT(_id);
+        }
+
         // 第一步，检查价格是否合法有效
         if (nft.price < _minimumFee) {
             revert InvalidPrice(nft.price);            
@@ -361,20 +373,33 @@ contract NFTMarket is IERC20Receipient {
         // 第四步，触发事件
         emit OrderPlaced(oId, _orders[oId].status, nft.tokenId, nft.contractAddress, msg.sender, nft.owner, nft.price, platformFee);         
 
-        // 第五步，将对应金额的代币从买家转移给NFT的所有者        
+        // 第五步，检查买家和卖家是否是同一个人
+        if (_isBuyerEqualToSeller(msg.sender, nft.owner)) {
+            revert SameBuyerAndSeller(_id, nft.tokenId, nft.owner);
+        }
+
+        // 第六步，获取NFT当前所有者，并检查所有者是否发生变化
+        (address _currentOwner, ) = _getCurrentOwner(_id, nft, oId);
+        // 6.1 如果返回的所有者地址为零地址，则表示NFT已经不存在了
+        if (_currentOwner == address(0)) {
+            return oId;
+        }
+        // 6.2 如果返回的所有者地址和NFT的当前所有者不一致，则表示NFT已经转移了
+        if (!_isCurrentOwner(_id, _currentOwner, nft, oId)) {
+            return oId;
+        }        
+
+        // 第七步，将对应金额的代币从买家转移给NFT的所有者        
         try _token.transferFrom(msg.sender, nft.owner, nft.price) returns (bool success) {
             if (!success) {
-                _cancelOrder(oId);
+                // _cancelOrder(oId); 不需要修改订单状态为取消，因为已经revert了，所有修改都会被回滚！！
                 revert TokenTransferFailed(_id, nft.tokenId, msg.sender, nft.owner, nft.price);
             }
         } catch Error(string memory reason) {
-            _cancelOrder(oId);
             revert(reason);
         } catch Panic(uint256 errorCode) {
-            _cancelOrder(oId);
             revert CallPanic(errorCode);
         } catch (bytes memory) {
-            _cancelOrder(oId);
             revert CallFailed("ERC20Enhanced: transferFrom call failed");
         }
 
@@ -382,17 +407,13 @@ contract NFTMarket is IERC20Receipient {
         bytes memory oIdBytes = abi.encodePacked(oId);
         try _token.transferWithCallback(nft.owner, address(this), platformFee, oIdBytes) returns (bool success) {
             if (!success) {
-                _cancelOrder(oId);
-                revert PlatformFeeTransferFailed(oId, nft.tokenId, msg.sender, nft.owner, platformFee);
+                revert PlatformFeeTransferFailed(nft.tokenId, msg.sender, nft.owner, platformFee);
             }
         } catch Error(string memory reason) {
-            _cancelOrder(oId);
             revert(reason);
         } catch Panic(uint256 errorCode) {
-            _cancelOrder(oId);
             revert CallPanic(errorCode);
         } catch (bytes memory) {
-            _cancelOrder(oId);
             revert CallFailed("ERC20Enhanced: transferWithCallback call failed (platformFee)");
         }             
 
@@ -431,27 +452,51 @@ contract NFTMarket is IERC20Receipient {
             _currentOwner = _owner;
         } catch {            
             if (orderId != 0) {
-                _orders[orderId].status = OrderStatus.Cancelled;
+                _cancelOrder(orderId);
             }
             // NFT不存在，从市场中移除
             _removeInvalidNFT(_id);            
             // 触发事件
             emit NFTNoLongerExists(_id, nft.tokenId);
-            revert IERC721Errors.ERC721NonexistentToken(nft.tokenId);
+            // revert IERC721Errors.ERC721NonexistentToken(nft.tokenId);    // 不能回退，因为有逻辑处理，回退后逻辑处理失效
+            _currentOwner = address(0);
         }
-        // 第二步，检查当前所有者与记录所有者是否一致
+        
+        return (_currentOwner, _contract);
+    }
+
+    /**
+    * @dev 检查NFT的所有者是否一致
+    * @param _id NFT的市场ID
+    * @param _currentOwner NFT的当前所有者
+    * @param nft NFT信息
+    * @param orderId 订单ID
+    * @return bool 所有者是否一致
+    */
+    function _isCurrentOwner(uint256 _id, address _currentOwner, NFT memory nft, uint256 orderId) private returns (bool) {
         if (_currentOwner != nft.owner) {
             if (orderId != 0) {
-                _orders[orderId].status = OrderStatus.Cancelled;
+                _cancelOrder(orderId);
             }
             // 出现了所有权变更，将该NFT 从市场中移除
             _removeInvalidNFT(_id);  
             // 触发事件
             emit NFTNoLongerAvailable(_id, nft.tokenId);
             // 撤销，回退
-            revert NFTOwnershipChanged(_id, nft.tokenId, nft.owner, _currentOwner);
+            // revert NFTOwnershipChanged(_id, nft.tokenId, nft.owner, _currentOwner);  // 不能回退，因为有逻辑处理，回退后逻辑处理失效
+            return false;
         }
-        return (_currentOwner, _contract);
+        return true;
+    }
+
+    /**
+    * @dev 检查买家是否与卖家相同
+    * @param buyer 买家地址
+    * @param seller 卖家地址
+    * @return bool 买家是否与卖家相同
+    */
+    function _isBuyerEqualToSeller(address buyer, address seller) private pure returns (bool) {
+        return buyer == seller;
     }
 
     /**
@@ -478,39 +523,28 @@ contract NFTMarket is IERC20Receipient {
         
         // 第二步，权限验证
         if (msg.sender != address(_token)) {
-            // order.status = OrderStatus.Cancelled;    // 这里错误，因为order是memory副本，修改它不会影响storege 中的订单!!!
-            _cancelOrder(oId);
             revert Unauthorized(msg.sender);
         }     
 
         // 第三步，检查订单是否存在
         if (order.id != oId) {
-            _cancelOrder(oId);
             revert InvalidOrder(oId);
         }        
 
         // 第四步，获取到对应的NFT和对应的NFT合约
         NFT memory nft = _nfts[order.nftMarketId];
 
-        // 去掉了第五步检查，相信对方合约遵守了ERC721规范，如果在做NFT 转移时发现不是所有者，会按照规范返回错误
-
-        // 第五步，检查NFT是否存在，当前所有者是否与记录的所有者一致
-        // (, IERC721 _contract) = _getCurrentOwner(order.nftMarketId, nft, oId);
-      
-        // 第七步，将NFT从NFT的所有者转移到买家
+        // 第五步，将NFT从NFT的所有者转移到买家
         IERC721 _contract = IERC721(nft.contractAddress);
         try _contract.safeTransferFrom(nft.owner, order.buyer, nft.tokenId) {            
             _removeInvalidNFT(order.nftMarketId);
             _orders[oId].status = OrderStatus.Fulfilled;
             emit NFTSold(oId, nft.tokenId, nft.contractAddress, order.buyer, nft.owner, nft.price, order.platformFee);
         } catch Error(string memory reason) {
-            _cancelOrder(oId);
             revert(reason);
         } catch Panic(uint256 errorCode) {
-            _cancelOrder(oId);
             revert CallPanic(errorCode);
         } catch (bytes memory) {
-            _cancelOrder(oId);
             revert NFTTransferFailed(oId, nft.tokenId, order.buyer, nft.owner);
         }         
     }
